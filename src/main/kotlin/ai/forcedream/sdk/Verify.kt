@@ -71,6 +71,34 @@ object Verify {
         return if (v.isTextual) v.asText() else Canonical.jsNumber(v.asDouble())
     }
 
+    /**
+     * Exact replica of the server's verifyMerkleInclusion. Each sibling carries its own
+     * position, so ordering is never derived from leaf_index. Hashing is over concatenated
+     * HEX STRINGS, not raw bytes -- matching the server exactly. An empty sibling array
+     * means the root is the leaf digest unchanged (the batch_size == 1 case, which is every
+     * real proof the platform has emitted to date).
+     */
+    fun verifyMerkleInclusion(leafHash: String, siblings: JsonNode?, expectedRoot: String): Boolean {
+        if (siblings == null || !siblings.isArray) return false
+        return try {
+            var current = leafHash
+            for (step in siblings) {
+                if (!step.has("hash") || !step.get("hash").isTextual) return false
+                val siblingHash = step.get("hash").asText()
+                val position = if (step.has("position")) step.get("position").asText() else null
+                current = if (position == "right") {
+                    Canonical.sha256Hex(current + siblingHash)
+                } else {
+                    Canonical.sha256Hex(siblingHash + current)
+                }
+            }
+            current == expectedRoot
+        } catch (e: Exception) {
+            // Contract: verification failure returns false, it never raises.
+            false
+        }
+    }
+
     fun verifyProof(apiBase: String, taskId: String?, proofInput: JsonNode?): VerifyResult {
         val proof: JsonNode = proofInput ?: run {
             requireNotNull(taskId) { "Provide task_id or proof" }
@@ -94,20 +122,37 @@ object Verify {
         val signable = buildSignable(proof)
         val digest = Canonical.sha256Hex(Canonical.wfCanonical(signable.fields))
 
+        val proofAlgorithm =
+            if (proof.has("algorithm") && !proof.get("algorithm").isNull)
+                proof.get("algorithm").asText() else null
+
         var verified = false
         if (verifyingKey != null && proof.has("signature")) {
-            val algorithm = if (proof.has("algorithm")) proof.get("algorithm").asText() else null
-            if (algorithm == null || algorithm == "Ed25519") {
-                try {
-                    val sigBytes = Base64.getDecoder().decode(proof.get("signature").asText())
-                    val digestBytes = hexToBytes(digest)
-                    val sig = Signature.getInstance("Ed25519")
-                    sig.initVerify(verifyingKey)
-                    sig.update(digestBytes)
+            try {
+                val sigBytes = Base64.getDecoder().decode(proof.get("signature").asText())
+                val sig = Signature.getInstance("Ed25519")
+                sig.initVerify(verifyingKey)
+
+                if (proofAlgorithm == "Ed25519-batched") {
+                    // A batched proof is only as strong as this real double-check: the
+                    // digest must genuinely be a leaf of the claimed root, verified BEFORE
+                    // the signature is trusted. The signature is over the ROOT, not the
+                    // digest.
+                    val root =
+                        if (proof.has("merkle_root") && proof.get("merkle_root").isTextual)
+                            proof.get("merkle_root").asText() else null
+                    val siblings = proof.get("inclusion_proof")?.get("siblings")
+
+                    if (!root.isNullOrEmpty() && verifyMerkleInclusion(digest, siblings, root)) {
+                        sig.update(hexToBytes(root))
+                        verified = sig.verify(sigBytes)
+                    }
+                } else if (proofAlgorithm == null || proofAlgorithm == "Ed25519") {
+                    sig.update(hexToBytes(digest))
                     verified = sig.verify(sigBytes)
-                } catch (e: Exception) {
-                    verified = false
                 }
+            } catch (e: Exception) {
+                verified = false
             }
         }
 
@@ -117,7 +162,7 @@ object Verify {
             verified = verified,
             taskId = taskIdOut,
             keyId = keyId,
-            algorithm = "Ed25519",
+            algorithm = proofAlgorithm ?: "Ed25519",
             fieldsSigned = signable.fieldCount,
             trustless = true,
             message = if (verified)
