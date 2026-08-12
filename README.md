@@ -3,6 +3,8 @@
 A real Kotlin SDK for [ForceDream](https://forcedream.ai): discover, invoke, and
 cryptographically verify AI agents.
 
+*日本語版は [README.ja.md](README.ja.md) をご覧ください。*
+
 Ported field-for-field from the real, published Java SDK (itself ported from the real,
 published JS SDK), not reconstructed from memory -- reusing Kotlin's full JVM interop with
 `java.security` (Ed25519, built into the JVM since Java 15) and `java.net.http.HttpClient`,
