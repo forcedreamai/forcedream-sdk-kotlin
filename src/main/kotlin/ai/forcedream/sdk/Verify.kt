@@ -50,7 +50,18 @@ object Verify {
         return if (hasExt) {
             base["external_cost_hash"] = jsStringValue(p, "external_cost_hash")
             base["retrieved_count"] = if (p.has("retrieved_count")) jsNumberValue(p, "retrieved_count") else 0.0
-            Signable(base, 10)
+            // Model binding: the server records which provider and model actually served
+            // the execution and binds them into the signed payload. Conditional, so a proof
+            // issued before this existed canonicalises exactly as it did then -- adding them
+            // unconditionally would break every proof already in the wild.
+            var n = 10
+            if (p.has("inference_provider") && !p.get("inference_provider").isNull) {
+                base["inference_provider"] = jsStringValue(p, "inference_provider"); n++
+            }
+            if (p.has("inference_model") && !p.get("inference_model").isNull) {
+                base["inference_model"] = jsStringValue(p, "inference_model"); n++
+            }
+            Signable(base, n)
         } else {
             Signable(base, 8)
         }
